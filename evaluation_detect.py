@@ -7,121 +7,147 @@ Created on Tue Apr  7 15:53:21 2020
 Evaluation of detection task at ADAM challenge MICCAI 2020
 """
 
-import difflib
+from difflib import SequenceMatcher
+import warnings
+
 import numpy as np
 import os
 import SimpleITK as sitk
 
+
 # Set the path to the source data (e.g. the training data for self-testing)
-# and the output directory of that subject
-testDir        = '' # For example: '/data/0'
-participantDir = '' # For example: '/output/teamname/0'
+# and the ouput directory of that subject
+#test_dir = r''  # For example: '/data/0'
+#participant_dir = r''  # For example: '/output/teamname/0'
 
 def do():
     """Main function"""
-    resultFilename = getResultFilename(participantDir)  
+
+    result_filename = get_result_filename(participant_dir)
        
-    testLocations = getLocations(os.path.join(testDir, 'location.txt'))
-    resultLocations = getResult(resultFilename)
-    testImage = sitk.ReadImage(os.path.join(testDir, 'aneurysms.nii.gz'))
+    test_locations = get_locations(os.path.join(test_dir, 'location.txt'))
+    result_locations = get_result(result_filename)
+    test_image = sitk.ReadImage(os.path.join(test_dir, 'aneurysms.nii.gz'))
     
-    sensitivity, falsePositiveCount = getDetectionMetrics(testLocations, resultLocations, testImage)       
+    sensitivity, false_positive_count = get_detection_metrics(test_locations, result_locations, test_image)
 
-    print('Sensitivity ',                sensitivity, '(higher is better, max=1)')
-    print('False Positive Count', falsePositiveCount,         '(lower is better)')
+    print('Sensitivity: %.3f (higher is better, max=1)' % sensitivity)
+    print('False Positive Count: %d (lower is better)' % false_positive_count)
     
 
-def getLocations(testFilename):
-    """Return the locations and radius of actual aneurysms"""
+def get_locations(test_filename):
+    """Return the locations and radius of actual aneurysms as a NumPy array"""
+
+    # Read comma-separated coordinates from a text file.
+    with warnings.catch_warnings():
+        # Suppress empty file warning from genfromtxt.
+        warnings.filterwarnings("ignore", message=".*Empty input file.*")
+
+        # atleast_2d() makes sure that test_locations is a 2D array, even if there is just a single location.
+        # genfromtxt() raises a ValueError if the number of columns is inconsistent.
+        test_locations = np.atleast_2d(np.genfromtxt(test_filename, delimiter=',', encoding='utf-8-sig'))
+
+    # Reshape an empty result into a 0x4 array.
+    if test_locations.size == 0:
+        test_locations = test_locations.reshape(0, 4)
+
+    # DEBUG: verify that the inner dimension size is 4.
+    assert test_locations.shape[1] == 4
     
-    testLocations = []
-    with open(testFilename, 'r') as f:
-        for line in f:
-            i = line.rstrip().split(', ')
-            testLocations.append([int(x) for x in i[:3]] + [float(i[3])])
-          
-    for coord in testLocations:
-        assert len(coord) == 4
-    
-    return testLocations
+    return test_locations
 
 
-def getResultFilename(participantDir):
+def get_result_filename(dirname):
     """Find the filename of the result coordinate file.
     
     This should be result.txt  If this file is not present,
     it tries to find the closest filename."""
-    
-    files = os.listdir(participantDir)
+
+    files = os.listdir(dirname)
     
     if not files:
-        raise Exception("No results in "+ participantDir)
+        raise Exception("No results in " + dirname)
     
-    resultFilename = None
-    if 'result.txt' in files:
-        resultFilename = os.path.join(participantDir, 'result.txt')
-    else:
-        # Find the filename that is closest to 'result.txt'
-        maxRatio = -1
-        for f in files:
-            currentRatio = difflib.SequenceMatcher(a = f, b = 'result.txt').ratio()
-            if currentRatio > maxRatio:
-                resultFilename = os.path.join(participantDir, f)
-                maxRatio = currentRatio
-                
-    return resultFilename
-    
-	
-def getResult(resultFilename):
-    """Read Result file and extract coordinates in list"""
-    
-    resultLocations = []
-    with open(resultFilename, 'r') as f:
-        for line in f:
-            resultLocations.append([int(x) for x in line.rstrip().split(', ')])
-    
-    for coord in resultLocations:
-        assert len(coord) == 3
+    # Find the filename that is closest to 'result.txt'
+    ratios = [SequenceMatcher(a=f, b='result.txt').ratio() for f in files]
+    result_filename = files[int(np.argmax(ratios))]
+
+    # Return the full path to the file.
+    return os.path.join(dirname, result_filename)
+
+
+def get_result(result_filename):
+    """Read Result file and extract coordinates as a NumPy array"""
+
+    # Read comma-separated coordinates from a text file.
+    with warnings.catch_warnings():
+        # Suppress empty file warning from genfromtxt.
+        warnings.filterwarnings("ignore", message=".*Empty input file.*")
+
+        # atleast_2d() makes sure that test_locations is a 2D array, even if there is just a single location.
+        # genfromtxt() raises a ValueError if the number of columns is inconsistent.
+        result_locations = np.atleast_2d(np.genfromtxt(result_filename, delimiter=',', encoding='utf-8-sig'))
+
+    # Reshape an empty result into a 0x3 array.
+    if result_locations.size == 0:
+        result_locations = result_locations.reshape(0, 3)
+
+    # DEBUG: verify that the inner dimension size is 3.
+    assert result_locations.shape[1] == 3
         
-    return resultLocations
-   
-   
-def getDetectionMetrics(testLocations, resultLocations, testImage):
+    return result_locations
+
+
+def get_detection_metrics(test_locations, result_locations, test_image):
     """Calculate sensitivity and false positive count for each image.
-    
-    The distance between every result-locations and test-locations must be less
+
+    The distance between every result-location and test-locations must be less
     than the radius."""
+
+    test_radii = test_locations[:, -1]
+
+    # Transform the voxel coordinates into physical coordinates. TransformContinuousIndexToPhysicalPoint handles
+    # sub-voxel (i.e. floating point) indices.
+    test_coords = np.array([
+        test_image.TransformContinuousIndexToPhysicalPoint(coord[:3]) for coord in test_locations.astype(float)])
+    pred_coords = np.array([
+        test_image.TransformContinuousIndexToPhysicalPoint(coord) for coord in result_locations.astype(float)])
+
+    # Reshape empty arrays into 0x3 arrays.
+    if test_coords.size == 0:
+        test_coords = test_coords.reshape(0, 3)
+    if pred_coords.size == 0:
+        pred_coords = pred_coords.reshape(0, 3)
     
-    testRadii = [coord[-1] for coord in testLocations]
     
-    testCoords = [np.array(testImage.TransformIndexToPhysicalPoint(coord[:3])) for coord in testLocations]
-    predCoords = [np.array(testImage.TransformIndexToPhysicalPoint(coord)) for coord in resultLocations]
-    
-    TP = 0
-    for location, radius in zip(testCoords, testRadii):
-        for detection in predCoords:
+    #True positives lie within radius  of true aneurysm. Only count one true positive per aneurysm. 
+    true_positives = 0
+    for location, radius in zip(test_coords, test_radii):
+        detected = False
+        for detection in pred_coords:
             distance = np.linalg.norm(detection - location)
             if distance <= radius:
-                TP += 1
-                break               
-            
-    FP = 0
-    for detection in predCoords:
+                detected = True
+        if detected:
+            true_positives += 1
+    
+    false_positives = 0
+    for detection in pred_coords:
         found = False
-        for location, radius in zip(testCoords, testRadii):
+        for location, radius in zip(test_coords, test_radii):
             distance = np.linalg.norm(location - detection)
             if distance <= radius:
                 found = True 
         if not found:
-            FP += 1
-     
-    if len(testLocations) == 0:
-        sensitivity = None
+            false_positives += 1
+            
+    if len(test_locations) == 0:
+        sensitivity = np.nan
     else:
-        sensitivity = TP / len(testLocations)  
+        sensitivity = true_positives / len(test_locations)
       
-    return sensitivity, FP
+    return sensitivity, false_positives
 
   
 if __name__ == "__main__":
-    do()   
+    do()

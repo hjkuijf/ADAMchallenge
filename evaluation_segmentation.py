@@ -7,146 +7,135 @@ Created on Tue Apr  7 15:51:05 2020
 
 Evaluation for segmentation at ADAM challenge at MICCAI 2020
 """
-import difflib
+from difflib import SequenceMatcher
 import numpy as np
 import os
 import SimpleITK as sitk
 from scipy import ndimage
 import scipy.spatial
-import evaluation_detect as ed
+import evaluation_detect_EB as ed
+
 
 # Set the path to the source data (e.g. the training data for self-testing)
 # and the output directory of that subject
-testDir        = '' # For example: '/data/0'
-participantDir = '' # For example: '/output/teamname/0'
+#test_dir = r''  # For example: '/data/0'
+#participant_dir = r''  # For example: '/output/teamname/0'
+
 
 def do():
     """Main function"""
-    resultFilename = getResultFilename(participantDir)  
-    testImage, resultImage = getImages(os.path.join(testDir, 'aneurysms.nii.gz'), resultFilename)
+    result_filename = get_result_filename(participant_dir)
+    test_image, result_image = get_images(os.path.join(test_dir, 'aneurysms.nii.gz'), result_filename)
+
+    dsc = get_dsc(test_image, result_image)
+    h95 = get_hausdorff(test_image, result_image)
+    vs = get_vs(test_image, result_image)
+
+    test_locations = ed.get_locations(os.path.join(test_dir, 'location.txt'))
+    result_locations = get_center_of_mass(result_image)
+
+    sensitivity, false_positives = ed.get_detection_metrics(test_locations, result_locations, test_image)
     
-    dsc = getDSC(testImage, resultImage)
-    h95 = getHausdorff(testImage, resultImage)
-    vs = getVS(testImage, resultImage)
-    
-    testLocations   = ed.getLocations(os.path.join(testDir, 'location.txt')) 
-    resultLocations = getCenterOfMassDetections(resultImage) 
-    
-    sensitivity, falsePositiveCount = ed.getDetectionMetrics(testLocations, resultLocations, testImage)     
-    
-    print('Dice',                                dsc,       '(higher is better, max=1)')
-    print('HD',                                  h95, 'mm',  '(lower is better, min=0)')
-    print('VS',                                   vs,       '(higher is better, min=0)')
-    print('Sensitivity ',                sensitivity,       '(higher is better, max=1)')
-    print('False Positive Count', falsePositiveCount,               '(lower is better)')
+    print('Dice: %.3f (higher is better, max=1)' % dsc)
+    print('HD: %.3f mm (lower is better, min=0)' % h95)
+    print('VS: %.3f (higher is better, min=0)' % vs)
+    print('Sensitivity: %.3f (higher is better, max=1)' % sensitivity)
+    print('False Positive Count: %d (lower is better)' % false_positives)
     
 
-def getResultFilename(participantDir):
+def get_result_filename(dirname):
     """Find the filename of the result image.
     
     This should be result.nii.gz or result.nii. If these files are not present,
     it tries to find the closest filename."""
-    files = os.listdir(participantDir)
+
+    files = os.listdir(dirname)
     
     if not files:
-        raise Exception("No results in "+ participantDir)
+        raise Exception("No results in " + dirname)
     
-    resultFilename = None
-    if 'result.nii.gz' in files:
-        resultFilename = os.path.join(participantDir, 'result.nii.gz')
-    elif 'result.nii' in files:
-        resultFilename = os.path.join(participantDir, 'result.nii')
-    else:
-        
-        maxRatio = -1
-        for f in files:
-            currentRatio = difflib.SequenceMatcher(a = f, b = 'result.nii.gz').ratio()
-            if currentRatio > maxRatio:
-                resultFilename = os.path.join(participantDir, f)
-                maxRatio = currentRatio
-                
-    return resultFilename
+    # Find the filename that is closest to either 'result.nii.gz' or 'result.nii'.
+    ratios = [[SequenceMatcher(a=a, b=b).ratio() for b in ['result.nii.gz', 'result.nii']] for a in files]
+    result_filename = files[int(np.argmax(np.max(ratios, axis=1)))]
+
+    # Return the full path to the file.
+    return os.path.join(dirname, result_filename)
 
 
-def getImages(testFilename, resultFilename):
+def get_images(test_filename, result_filename):
     """Return the test and result images, thresholded and treated aneurysms removed."""
-    testImage   = sitk.ReadImage(testFilename)
-    resultImage = sitk.ReadImage(resultFilename)
+    test_image = sitk.ReadImage(test_filename)
+    result_image = sitk.ReadImage(result_filename)
     
-    assert testImage.GetSize() == resultImage.GetSize()
+    assert test_image.GetSize() == result_image.GetSize()
     
     # Get meta data from the test-image, needed for some sitk methods that check this
-    resultImage.CopyInformation(testImage)
+    result_image.CopyInformation(test_image)
     
     # Remove treated aneurysms from the test and result images, since we do not evaluate on this
-    treatedImage      = sitk.BinaryThreshold(testImage, 2, 3, 0, 1) # treated aneurysms == 2
-    maskedResultImage = sitk.Mask(resultImage, treatedImage)
-    maskedTestImage   = sitk.Mask(testImage, treatedImage)
+    treated_image = test_image != 2  # treated aneurysms == 2
+    masked_result_image = sitk.Mask(result_image, treated_image)
+    masked_test_image = sitk.Mask(test_image, treated_image)
     
-    # Convert to binary mask
-    if 'integer' in maskedResultImage.GetPixelIDTypeAsString():
-        bResultImage = sitk.BinaryThreshold(maskedResultImage, 1, 1000, 1, 0)
-    else:
-        bResultImage = sitk.BinaryThreshold(maskedResultImage, 0.5, 1000, 1, 0)
-        
-    return maskedTestImage, bResultImage
+    # Return two binary masks
+    return masked_test_image > 0.5, masked_result_image > 0.5
 
         
-def getDSC(testImage, resultImage):    
+def get_dsc(test_image, result_image):
     """Compute the Dice Similarity Coefficient."""
-    testArray   = sitk.GetArrayFromImage(testImage).flatten()
-    resultArray = sitk.GetArrayFromImage(resultImage).flatten()
+    test_array = sitk.GetArrayFromImage(test_image).flatten()
+    result_array = sitk.GetArrayFromImage(result_image).flatten()
     
-    testSum   = np.sum(testArray)
-    resultSum = np.sum(resultArray)
+    test_sum = np.sum(test_array)
+    result_sum = np.sum(result_array)
     
-    if testSum == 0 and resultSum == 0:
+    if test_sum == 0 and result_sum == 0:
         # Perfect result in case of no aneurysm
-        return None
-    if testSum == 0 and not resultSum == 0:
+        return np.nan
+    elif test_sum == 0 and not result_sum == 0:
         # Some segmentations, while there is no aneurysm
         return 0
-    
-    # There is an aneurysm, return similarity = 1.0 - dissimilarity
-    return 1.0 - scipy.spatial.distance.dice(testArray, resultArray)   
+    else:
+        # There is an aneurysm, return similarity = 1.0 - dissimilarity
+        return 1.0 - scipy.spatial.distance.dice(test_array, result_array)
     
 
-def getHausdorff(testImage, resultImage):
+def get_hausdorff(test_image, result_image):
     """Compute the Hausdorff distance."""
-    
-    resultStatistics = sitk.StatisticsImageFilter()
-    resultStatistics.Execute(resultImage)
+
+    result_statistics = sitk.StatisticsImageFilter()
+    result_statistics.Execute(result_image)
   
-    if resultStatistics.GetSum() == 0:
-        hd = None
+    if result_statistics.GetSum() == 0:
+        hd = np.nan
         return hd
-        
+
     # Edge detection is done by ORIGINAL - ERODED, keeping the outer boundaries of lesions. Erosion is performed in 3D
-    eTestImage   = sitk.BinaryErode(testImage, (1,1,1) )
-    eResultImage = sitk.BinaryErode(resultImage, (1,1,1) )
+    e_test_image = sitk.BinaryErode(test_image, (1, 1, 1))
+    e_result_image = sitk.BinaryErode(result_image, (1, 1, 1))
+
+    h_test_image = sitk.Subtract(test_image, e_test_image)
+    h_result_image = sitk.Subtract(result_image, e_result_image)
+
+    h_test_indices = np.flip(np.argwhere(sitk.GetArrayFromImage(h_test_image))).tolist()
+    h_result_indices = np.flip(np.argwhere(sitk.GetArrayFromImage(h_result_image))).tolist()
+
+    test_coordinates = [test_image.TransformIndexToPhysicalPoint(x) for x in h_test_indices]
+    result_coordinates = [test_image.TransformIndexToPhysicalPoint(x) for x in h_result_indices]
     
-    hTestImage   = sitk.Subtract(testImage, eTestImage)
-    hResultImage = sitk.Subtract(resultImage, eResultImage)    
-    
-    hTestArray   = sitk.GetArrayFromImage(hTestImage)
-    hResultArray = sitk.GetArrayFromImage(hResultImage)   
-        
-    testCoordinates   = [testImage.TransformIndexToPhysicalPoint(x.tolist()) for x in np.transpose( np.flipud( np.nonzero(hTestArray) ))]
-    resultCoordinates = [testImage.TransformIndexToPhysicalPoint(x.tolist()) for x in np.transpose( np.flipud( np.nonzero(hResultArray) ))]    
-    
-    def getDistancesFromAtoB(a, b):    
-        kdTree = scipy.spatial.KDTree(a, leafsize=100)
-        return kdTree.query(b, k=1, eps=0, p=2)[0]
-    
-    dTestToResult = getDistancesFromAtoB(testCoordinates, resultCoordinates)
-    dResultToTest = getDistancesFromAtoB(resultCoordinates, testCoordinates)  
-    
-    hd = max(np.percentile(dTestToResult, 95), np.percentile(dResultToTest, 95))
+    def get_distances_from_a_to_b(a, b):
+        kd_tree = scipy.spatial.KDTree(a, leafsize=100)
+        return kd_tree.query(b, k=1, eps=0, p=2)[0]
+
+    d_test_to_result = get_distances_from_a_to_b(test_coordinates, result_coordinates)
+    d_result_to_test = get_distances_from_a_to_b(result_coordinates, test_coordinates)
+
+    hd = max(np.percentile(d_test_to_result, 95), np.percentile(d_result_to_test, 95))
     
     return hd
     
        
-def getVS(testImage, resultImage):   
+def get_vs(test_image, result_image):
     """Volumetric Similarity.
     
     VS = 1 -abs(A-B)/(A+B)
@@ -155,38 +144,39 @@ def getVS(testImage, resultImage):
     B = predicted     
     """
     
-    testStatistics   = sitk.StatisticsImageFilter()
-    resultStatistics = sitk.StatisticsImageFilter()
+    test_statistics = sitk.StatisticsImageFilter()
+    result_statistics = sitk.StatisticsImageFilter()
     
-    testStatistics.Execute(testImage)
-    resultStatistics.Execute(resultImage)
+    test_statistics.Execute(test_image)
+    result_statistics.Execute(result_image)
     
-    numerator = abs(testStatistics.GetSum() - resultStatistics.GetSum())
-    denominator = testStatistics.GetSum() + resultStatistics.GetSum() 
+    numerator = abs(test_statistics.GetSum() - result_statistics.GetSum())
+    denominator = test_statistics.GetSum() + result_statistics.GetSum()
     
     if denominator > 0:
         vs = 1 - float(numerator) / denominator
     else:
-        vs = None
+        vs = np.nan
             
     return vs
     
 
-def getCenterOfMassDetections(resultImage):
+def get_center_of_mass(result_image):
     """Based on result segmentation, find coordinate of centre of mass of predicted aneurysms."""
-    resultArray = sitk.GetArrayFromImage(resultImage)
-    if np.sum(resultArray) == 0:
-        #no detections
-        return []
-    structure = ndimage.generate_binary_structure(rank = resultArray.ndim, connectivity = resultArray.ndim)
+    result_array = sitk.GetArrayFromImage(result_image)
+    if np.sum(result_array) == 0:
+        # no detections
+        return np.ndarray((0, 3))
+
+    structure = ndimage.generate_binary_structure(rank=result_array.ndim, connectivity=result_array.ndim)
    
-    labelArray = ndimage.label(resultArray, structure)[0]
-    index = np.unique(labelArray)[1:] 
-    
-    locations = ndimage.measurements.center_of_mass(resultArray, labelArray, index)    
-    locationsFlipped = np.fliplr(locations) # put into x, y, z order
-    return np.rint(locationsFlipped).astype("int").tolist() # round to nearest voxel
+    label_array = ndimage.label(result_array, structure)[0]
+    index = np.unique(label_array)[1:]
+
+    # Get locations in x, y, z order.
+    locations = np.fliplr(ndimage.measurements.center_of_mass(result_array, label_array, index))
+    return locations
 
   
 if __name__ == "__main__":
-    do()    
+    do()
