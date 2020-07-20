@@ -13,7 +13,7 @@ import os
 import SimpleITK as sitk
 from scipy import ndimage
 import scipy.spatial
-import evaluation_detect_EB as ed
+import evaluation_detection as ed
 
 
 # Set the path to the source data (e.g. the training data for self-testing)

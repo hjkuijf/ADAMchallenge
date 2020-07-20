@@ -17,8 +17,8 @@ import SimpleITK as sitk
 
 # Set the path to the source data (e.g. the training data for self-testing)
 # and the ouput directory of that subject
-#test_dir = r''  # For example: '/data/0'
-#participant_dir = r''  # For example: '/output/teamname/0'
+# test_dir = r''  # For example: '/data/0'
+# participant_dir = r''  # For example: '/output/teamname/0'
 
 def do():
     """Main function"""
@@ -55,8 +55,7 @@ def get_locations(test_filename):
     assert test_locations.shape[1] == 4
     
     return test_locations
-
-
+    
 def get_result_filename(dirname):
     """Find the filename of the result coordinate file.
     
@@ -98,6 +97,20 @@ def get_result(result_filename):
     return result_locations
 
 
+def get_treated_locations(test_image):
+    """Return an array with a list of locations of treated aneurysms(based on aneurysms.nii.gz)"""
+    treated_image = test_image > 1.5
+    treated_array = sitk.GetArrayFromImage(treated_image)
+    
+    if np.sum(treated_array) == 0:
+        # no treated aneurysms
+        return []
+    
+    # flip so (x,y,z)
+    treated_coords = np.flip(np.nonzero(treated_array))
+    
+    return np.array(list(zip(*treated_coords)))
+
 def get_detection_metrics(test_locations, result_locations, test_image):
     """Calculate sensitivity and false positive count for each image.
 
@@ -112,13 +125,16 @@ def get_detection_metrics(test_locations, result_locations, test_image):
         test_image.TransformContinuousIndexToPhysicalPoint(coord[:3]) for coord in test_locations.astype(float)])
     pred_coords = np.array([
         test_image.TransformContinuousIndexToPhysicalPoint(coord) for coord in result_locations.astype(float)])
-
+    treated_locations =  get_treated_locations(test_image)
+    treated_coords = np.array([
+        test_image.TransformContinuousIndexToPhysicalPoint(coord.astype(float)) for coord in treated_locations.astype(float)])
+    
+    
     # Reshape empty arrays into 0x3 arrays.
     if test_coords.size == 0:
         test_coords = test_coords.reshape(0, 3)
     if pred_coords.size == 0:
         pred_coords = pred_coords.reshape(0, 3)
-    
     
     #True positives lie within radius  of true aneurysm. Only count one true positive per aneurysm. 
     true_positives = 0
@@ -134,6 +150,8 @@ def get_detection_metrics(test_locations, result_locations, test_image):
     false_positives = 0
     for detection in pred_coords:
         found = False
+        if detection in treated_coords:
+           continue 
         for location, radius in zip(test_coords, test_radii):
             distance = np.linalg.norm(location - detection)
             if distance <= radius:
