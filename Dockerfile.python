@@ -1,0 +1,6 @@
+FROM continuumio/miniconda
+MAINTAINER kmtimmins
+
+RUN pip install numpy SimpleITK scipy
+
+ADD python/src /adam_example
