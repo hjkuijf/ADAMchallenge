@@ -104,7 +104,7 @@ def get_treated_locations(test_image):
     
     if np.sum(treated_array) == 0:
         # no treated aneurysms
-        return []
+        return np.array([])
     
     # flip so (x,y,z)
     treated_coords = np.flip(np.nonzero(treated_array))
